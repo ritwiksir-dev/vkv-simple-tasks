@@ -83,7 +83,20 @@ label{display:block;font-size:13px;font-weight:750;margin-bottom:7px}input[type=
 </main>
 <div id="toast" class="toast"></div>
 
-<script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-app.js";
+import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBrFialD76YEYhQwGR0Q-KxKvIR8eV_bgA",
+  authDomain: "vkv-simple-tasks.firebaseapp.com",
+  projectId: "vkv-simple-tasks",
+  storageBucket: "vkv-simple-tasks.firebasestorage.app",
+  messagingSenderId: "162716378408",
+  appId: "1:162716378408:web:a66d0c632e5b19a99a9c1d"
+};
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
 const KEY="vkv_simple_tasks_v2";
 const templates={
  teacher:{title:"Daily Teacher Tasks",tasks:["Check attendance and late arrivals","Review today's lesson plans","Check pending student follow-up","Complete records / diary entries","Share required communication","Note tasks for tomorrow"]},

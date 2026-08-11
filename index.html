@@ -53,7 +53,7 @@ label{display:block;font-size:13px;font-weight:750;margin-bottom:7px}input[type=
 <h2>Your checklists</h2>
 <div id="cards" class="cards"></div>
 <div id="homeEmpty" class="empty">No checklists yet. Create one or use a template.</div>
-<div class="foot">Lists are saved on this device. Shared links open an interactive copy on the recipient’s device.</div>
+<div class="foot">Lists are saved on this device. Sharing creates a short cloud link that opens an interactive copy.</div>
 </main>
 
 <main id="detail" class="wrap detail">
@@ -96,7 +96,7 @@ const templates={
 let data={lists:[]}, current=null, undoStack=[], redoStack=[], restoring=false;
 const $=q=>document.querySelector(q);
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7)}
-function load(){try{const x=JSON.parse(localStorage.getItem(KEY));if(x&&Array.isArray(x.lists))data=x}catch(e){} renderHome();setTimeout(()=>importSharedFromURL(),0)}
+function load(){try{const x=JSON.parse(localStorage.getItem(KEY));if(x&&Array.isArray(x.lists))data=x}catch(e){} renderHome();setTimeout(()=>importCloudSharedFromURL(),0)}
 function snapshot(){return JSON.stringify(data)}
 function pushHistory(){if(restoring)return;undoStack.push(snapshot());if(undoStack.length>60)undoStack.shift();redoStack=[];updateHistoryButtons()}
 function save(){localStorage.setItem(KEY,JSON.stringify(data));updateHistoryButtons()}
@@ -149,34 +149,62 @@ function renderTasks(){
 }
 function addTask(){const v=$("#taskInput").value.trim();if(!v)return;pushHistory();get().tasks.push({text:v,done:false});$("#taskInput").value="";save();renderTasks();$("#taskInput").focus()}
 
-function encodeSharedList(l){
- const payload={v:1,title:l.title||"Checklist",instructions:l.instructions||"",deadlineDate:l.deadlineDate||"",deadlineTime:l.deadlineTime||"",tasks:l.tasks.map(t=>({text:t.text,done:!!t.done}))};
- const bytes=new TextEncoder().encode(JSON.stringify(payload));
- let bin=""; bytes.forEach(b=>bin+=String.fromCharCode(b));
- return btoa(bin).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+function cloudPayload(l){
+ return {
+   v:2,
+   title:l.title||"Checklist",
+   instructions:l.instructions||"",
+   deadlineDate:l.deadlineDate||"",
+   deadlineTime:l.deadlineTime||"",
+   tasks:l.tasks.map(t=>({text:String(t.text||""),done:!!t.done})),
+   updatedAt:new Date().toISOString()
+ };
 }
-function decodeSharedList(code){
+function cloudShareId(){
+ const chars="ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+ let s="";
+ const a=new Uint32Array(8);
+ crypto.getRandomValues(a);
+ for(let i=0;i<a.length;i++) s+=chars[a[i]%chars.length];
+ return s;
+}
+function cleanBaseURL(){
+ const u=new URL(location.href);
+ u.search="";
+ u.hash="";
+ return u.toString();
+}
+async function importCloudSharedFromURL(){
+ const u=new URL(location.href);
+ const id=u.searchParams.get("list");
+ if(!id)return false;
  try{
-   code=code.replace(/-/g,"+").replace(/_/g,"/");
-   while(code.length%4)code+="=";
-   const bin=atob(code), bytes=Uint8Array.from(bin,c=>c.charCodeAt(0));
-   return JSON.parse(new TextDecoder().decode(bytes));
- }catch(e){return null}
-}
-function shareURL(l){
- const base=location.href.split("#")[0];
- return base+"#share="+encodeSharedList(l);
-}
-function importSharedFromURL(){
- const m=location.hash.match(/^#share=(.+)$/);
- if(!m)return false;
- const x=decodeSharedList(m[1]);
- if(!x||!Array.isArray(x.tasks))return false;
- const l={id:uid(),title:x.title||"Shared Checklist",instructions:x.instructions||"",deadlineDate:x.deadlineDate||"",deadlineTime:x.deadlineTime||"",tasks:x.tasks.map(t=>({text:String(t.text||""),done:!!t.done})),created:new Date().toISOString(),sharedCopy:true};
- data.lists.unshift(l);save();
- history.replaceState(null,"",location.href.split("#")[0]);
- openList(l.id);toast("Shared checklist opened and saved to this device");
- return true;
+   toast("Opening shared checklist…");
+   const snap=await getDoc(doc(db,"checklists",id));
+   if(!snap.exists()){toast("Shared checklist not found");return false}
+   const x=snap.data();
+   if(!x||!Array.isArray(x.tasks)){toast("Shared checklist is invalid");return false}
+   const l={
+     id:uid(),
+     title:x.title||"Shared Checklist",
+     instructions:x.instructions||"",
+     deadlineDate:x.deadlineDate||"",
+     deadlineTime:x.deadlineTime||"",
+     tasks:x.tasks.map(t=>({text:String(t.text||""),done:!!t.done})),
+     created:new Date().toISOString(),
+     sharedCopy:true,
+     cloudId:id
+   };
+   data.lists.unshift(l);save();
+   history.replaceState(null,"",cleanBaseURL());
+   openList(l.id);
+   toast("Shared checklist opened and saved to this device");
+   return true;
+ }catch(e){
+   console.error(e);
+   toast("Could not open shared checklist");
+   return false;
+ }
 }
 function textOf(l){const done=l.tasks.filter(t=>t.done).length;
  let head=`${l.title||"Checklist"}`;
@@ -186,11 +214,24 @@ Deadline: ${isNaN(d)?l.deadlineDate:d.toLocaleDateString([], {dateStyle:"medium"
  return `${head}\n\n${l.tasks.map((t,i)=>`${t.done?"☑":"☐"} ${i+1}. ${t.text}`).join("\n")}\n\nProgress: ${done}/${l.tasks.length} completed`}
 async function copyList(l){try{await navigator.clipboard.writeText(textOf(l));toast("Checklist copied")}catch(e){const a=document.createElement("textarea");a.value=textOf(l);document.body.appendChild(a);a.select();document.execCommand("copy");a.remove();toast("Checklist copied")}}
 async function shareList(l){
- const url=shareURL(l);
- const msg=`${l.title||"Checklist"}\nOpen this interactive checklist:\n${url}`;
- if(navigator.share){try{await navigator.share({title:l.title||"VKV Simple Tasks",text:msg,url:url});return}catch(e){}}
- try{await navigator.clipboard.writeText(url);toast("Interactive checklist link copied")}catch(e){
-   const a=document.createElement("textarea");a.value=url;document.body.appendChild(a);a.select();document.execCommand("copy");a.remove();toast("Interactive checklist link copied");
+ try{
+   toast("Creating share link…");
+   const id=cloudShareId();
+   await setDoc(doc(db,"checklists",id),cloudPayload(l));
+   const url=cleanBaseURL()+"?list="+encodeURIComponent(id);
+   const msg=`${l.title||"Checklist"}\nOpen this interactive checklist:`;
+   if(navigator.share){
+     try{await navigator.share({title:l.title||"VKV Simple Tasks",text:msg,url:url});return}
+     catch(e){if(e&&e.name==="AbortError")return}
+   }
+   try{await navigator.clipboard.writeText(url);toast("Short checklist link copied")}
+   catch(e){
+     const a=document.createElement("textarea");a.value=url;document.body.appendChild(a);a.select();
+     document.execCommand("copy");a.remove();toast("Short checklist link copied");
+   }
+ }catch(e){
+   console.error(e);
+   toast("Could not create share link");
  }
 }
 $("#newBtn").onclick=()=>createList();
